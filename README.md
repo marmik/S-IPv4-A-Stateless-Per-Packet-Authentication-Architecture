@@ -1,69 +1,74 @@
 # S-IPv4
-## A Stateless Per-Packet Authentication Architecture
 
-### Status Console
+Stateless Per-Packet Authentication for IPv4.
 
-- Protocol class: Stateless packet-authentication overlay for IPv4
-- Codebase: C proof-of-concept (V1 legacy + V2 upgrade) + benchmark harness
-- Focus: Replay resistance, dynamic key derivation, tiered adaptive filtering, low-latency verification path
+S-IPv4 is a research architecture that adds cryptographic packet legitimacy checks without modifying the IPv4 header and without requiring per-flow server state. The current implementation includes a legacy V1 PoC and a V2 upgrade with protocol versioning, epoch-aware keying, adaptive replay defense, and reproducible benchmarks.
 
----
+## Why This Matters
 
-## Why S-IPv4
+S-IPv4 targets a specific systems problem: authenticate packet origin and integrity at line-rate style paths where connection setup and large session state are undesirable.
 
-S-IPv4 explores a security model where every packet carries enough verifiable context to be authenticated without maintaining heavy per-flow state. The PoC is designed to evaluate feasibility, behavior under attack-like traffic patterns, and measurable overhead.
+Core design intent:
+- Keep IPv4 unchanged and incrementally deployable.
+- Authenticate each packet independently.
+- Preserve NAT compatibility.
+- Bound replay risk with timestamp windows plus probabilistic nonce tracking.
+- Keep verification latency low and measurable.
 
-### V2 Upgrade Features (IEEE Expert Review Aligned)
+## What Is New In V2
 
-The `poc_v2` directory contains the updated architectural design strictly aligning with production requirements:
-- **Header Protocol Versioning:** Explicit 1-byte magic flag (`0x95`) mapping to S-IPv4 Version 2.0.
-- **Stateless Fragmentation Protection:** Strict `IP_DONTFRAG` socket enforcement and 1431-byte MTU guard.
-- **Epoch Key Strategy:** Secure hierarchical key derivation (HKDF) mapping master secrets to node-specific tokens, explicitly tracking key generation lifecycles (`key_ver`).
-- **Resilient Replay Protection:** A three-tier Adaptive Bloom filter triggering `DEGRADED_MODE` automatically using monotonic clock anchors to eliminate reliance on spoofable system NTP clocks.
-- **Cryptography Migration:** Total deprecation of old OpenSSL hooks, re-implemented natively over OpenSSL 3.0 `EVP_MAC` primitives.
+The active implementation in `poc_v2/` introduces the following major upgrades:
 
----
+- Protocol version signaling via explicit magic flags (`0x95` full mode, `0x96` compact mode in spec).
+- `key_ver` in header for key-rotation-safe verification.
+- Epoch-key lifecycle and deterministic `node_id` derivation.
+- Monotonic-clock anchored replay windowing.
+- Three-tier adaptive Bloom strategy with automatic degraded-mode activation under saturation.
+- OpenSSL 3 `EVP_MAC` migration for core protocol binaries.
+- Extended verification harness with V2-specific checks.
 
-## Repository Atlas
+Design rationale and architecture details are documented in:
+- `S-IPv4-Architecture.md`
+- `poc_v2/PROTOCOL_SPEC.md`
+- `CHANGELOG.md`
+
+## Repository Layout
 
 ```text
 S-IPv4/
-|- poc/                    # V1 Legacy PoC implementation
-|  |- bench/               # Benchmark suite and artifacts
-|- poc_v2/                 # V2 Upgraded PoC implementation (compliant)
-|  |- bench/               # Dedicated V2 benchmark suite
-|  |- test_run.sh          # Automated V1/V2 hybrid validation sequence
-|  |- Makefile             # Build entrypoint (OpenSSL 3.0 EVP_MAC clean)
+	poc/                         # V1 legacy PoC
+		bench/                     # V1 benchmarks
 
-|- s_ipv4_paper.tex        # Primary LaTeX manuscript
-|- S-IPv4-Architecture.md  # Architecture and design notes
-|- full_paper_draft.md     # Draft narrative
-|- working.md              # Working notes
+	poc_v2/                      # Active V2 PoC
+		Makefile                   # Build client/server
+		test_run.sh                # Automated V1+V2 validation
+		PROTOCOL_SPEC.md           # Header formats + security notes
+		bench/                     # V2 benchmark suite
+			run_all_benchmarks.sh
+			results.txt
+			plot_latency.py
+
+	s_ipv4_paper.tex             # Main manuscript source
+	full_paper_draft.md          # Paper draft notes
+	S-IPv4-Architecture.md       # Architecture reference
+	CHANGELOG.md                 # Versioned protocol evolution
 ```
 
----
+## Quickstart
 
-## Local Environment
-
-Target environment:
+### 1) Prerequisites
 
 - macOS or Linux
-- Xcode command line tools (`cc`, `make`)
-- OpenSSL from Homebrew / System (auto-detected by the Makefile)
+- C toolchain (`cc`, `make`)
+- OpenSSL (Homebrew path is auto-detected by the Makefile)
 
-Install dependency:
+Install on macOS:
 
 ```bash
 brew install openssl
 ```
 
----
-
-## Quick Start
-
-### 1. Build PoC binaries
-
-To build the standard V2 compliance testbed:
+### 2) Build V2 Client/Server
 
 ```bash
 cd poc_v2
@@ -71,72 +76,99 @@ make clean
 make all
 ```
 
-Expected outputs:
-
+Build outputs:
 - `poc_v2/client`
 - `poc_v2/server`
 
-*(Note: V1 legacy binaries can be identically built from the `poc/` directory.)*
-
-### 2. Run the verification suite
-
-The comprehensive verification suite encompasses 15 security phases tracking backwards compatibility and V2 protocol enhancements.
+### 3) Run Security Verification Suite
 
 ```bash
 cd poc_v2
 ./test_run.sh
 ```
 
-Test suite coverage includes:
+The suite covers ENFORCE and AUDIT behavior plus V2-specific protocol assertions, including:
+- valid packet acceptance
+- replay detection
+- expired timestamp rejection
+- forged token rejection
+- spoofed identity rejection
+- truncated packet handling
+- bad version-flag rejection
+- deterministic node identity behavior
+- key-version visibility
+- adaptive filter stress path activation
 
-- Valid packet acceptance
-- Replay detection (Strict tier simulation via `--force-fill`)
-- Expired timestamp rejection
-- Forged HMAC rejection
-- NodeID spoof rejection
-- Truncated packet handling
-- AUDIT mode logging with payload forwarding behavior
-- V2 exclusive: Version flag corruption testing
-- V2 exclusive: Deterministic NodeID distribution tracking
-- V2 exclusive: Deterministic `key_ver` persistence guarantees
-- V2 exclusive: Absolute Maximum Transmission Unit (MTU) testing
-
-### 3. Run the full benchmark pipeline
+### 4) Run Full Benchmark Pipeline
 
 ```bash
 cd poc_v2/bench
 ./run_all_benchmarks.sh
 ```
 
-Primary generated artifacts:
-
+Generated artifacts:
 - `poc_v2/bench/results.txt`
-- Benchmark PDF figures in `poc_v2/bench/`
+- figure PDFs (if `python3` + plotting deps are available)
 
----
+## Protocol Snapshot
 
-## Data + Figure Pipeline
+S-IPv4 adds a shim header between transport payload and IPv4 forwarding path. IPv4 itself is not modified.
 
-The benchmark orchestrator compiles and runs four benchmark lanes:
+V2 full header (`s_flag = 0x95`) includes:
+- `key_ver` (16-bit)
+- `node_id` (64-bit)
+- `timestamp` (64-bit)
+- `nonce` (64-bit)
+- truncated HMAC-SHA256 (128-bit)
 
-1. Token generation latency
-2. Full verification latency
-3. Throughput and overhead
-4. Bloom filter memory and false-positive behavior
+V2 compact mode (`s_flag = 0x96`) is specified for reduced overhead deployments with different security/overhead trade-offs.
 
-It then emits summary metrics and publication-ready figures.
+See `poc_v2/PROTOCOL_SPEC.md` for exact bit-level definitions and cryptographic truncation rationale.
 
----
+## Benchmark Coverage
+
+The V2 benchmark harness executes four lanes:
+1. token generation latency
+2. end-to-end verification latency
+3. throughput and overhead
+4. replay-filter memory and false-positive behavior
+
+`run_all_benchmarks.sh` emits machine info, structured metrics, and paper-ready summary lines in `results.txt`.
 
 ## Operating Modes
 
-- `ENFORCE`: invalid packets are rejected
-- `AUDIT`: invalid packets are logged while payload delivery behavior can be observed
+- `ENFORCE`: invalid packets are rejected.
+- `AUDIT`: invalid packets are logged while payload path behavior remains observable.
 
-This split allows security validation and compatibility experimentation without changing core binaries.
+This supports both strict security validation and compatibility experiments without rebuilding binaries.
 
----
+## Security Model (Scope)
 
-## Research Note
+S-IPv4 is designed to provide:
+- per-packet authenticity checks
+- packet integrity validation
+- bounded replay mitigation
+- spoofing resistance at the authentication layer
 
-This repository is a research-grade proof-of-concept evaluated under strict IEEE architectural scrutiny. It is intended for experimentation, evaluation, and paper reproducibility work rather than direct production deployment without extensive multi-node validation setups.
+S-IPv4 does not aim to replace:
+- transport confidentiality (handled by protocols such as QUIC/TLS)
+- reliability/ordering semantics
+- full anti-replay guarantees under all adversarial network conditions
+
+## Reproducibility Notes
+
+For publication-style reproducibility:
+- run tests via `poc_v2/test_run.sh`
+- run benchmarks via `poc_v2/bench/run_all_benchmarks.sh`
+- capture generated `results.txt` and figure PDFs
+- record compiler, OpenSSL version, CPU model, and OS build in experiment notes
+
+## Development Status
+
+- V1 (`poc/`) is retained as legacy baseline.
+- V2 (`poc_v2/`) is the active implementation track.
+- The project is research-grade and not production-hardened for unbounded internet deployment.
+
+## Citation
+
+If you use this code or architecture in academic work, cite the repository and accompanying manuscript source (`s_ipv4_paper.tex`).
