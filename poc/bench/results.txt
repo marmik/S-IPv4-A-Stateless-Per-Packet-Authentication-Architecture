@@ -1,0 +1,45 @@
+# S-IPv4 Benchmark Results
+# Generated: 2026-03-17 12:23:47 UTC
+# Host: Darwin Marmiks-MacBook-Pro.local 25.4.0 arm64
+# CPU: Apple M2 Pro
+
+# 1. HMAC Token Generation Latency (µs)
+# CRYPTO_BENCH mean std min max p50 p95 p99
+CRYPTO_BENCH	0.180	0.409	0.000	19.000	0.000	1.000	1.000
+
+# 2. Full Verification Latency (µs)
+# VERIFY_BENCH mean std min max p50 p95 p99
+VERIFY_BENCH	0.312	0.646	0.000	60.000	0.000	1.000	1.000
+
+# 3. Throughput Benchmark
+# THROUGHPUT_BENCH N mode pps mbps total_sec
+# THROUGHPUT_OVERHEAD N time_overhead_pct bw_overhead_pct
+THROUGHPUT_BENCH	10000	RAW	338238	346.36	0.0296
+THROUGHPUT_BENCH	10000	SIPV4	314802	425.61	0.0318
+THROUGHPUT_OVERHEAD	10000	7.44	32.03
+THROUGHPUT_BENCH	100000	RAW	355515	364.05	0.2813
+THROUGHPUT_BENCH	100000	SIPV4	334923	452.82	0.2986
+THROUGHPUT_OVERHEAD	100000	6.15	32.03
+THROUGHPUT_BENCH	1000000	RAW	459316	470.34	2.1772
+THROUGHPUT_BENCH	1000000	SIPV4	387954	524.51	2.5776
+THROUGHPUT_OVERHEAD	1000000	18.39	32.03
+
+# 4. Bloom Filter Memory
+# MEMORY_BENCH nonces filter_kb total_kb fp_rate_pct fill_pct
+MEMORY_BENCH	10000	3520.00	7040.00	0.000000	0.35
+MEMORY_BENCH	100000	3520.00	7040.00	0.000000	3.41
+MEMORY_BENCH	500000	3520.00	7040.00	0.000001	15.90
+MEMORY_BENCH	1000000	3520.00	7040.00	0.000467	29.26
+
+# ────────────────────────────────────────────────────────
+# LaTeX Table Data (copy into tabular environment)
+# ────────────────────────────────────────────────────────
+#
+# Key Numbers for Paper:
+#   Token Gen Mean:    0.180 µs
+#   Token Gen P99:     1.000 µs
+#   Verification Mean: 0.312 µs
+#   Verification P99:  1.000 µs
+#   Bloom Memory (1M): 7040.00 KiB (dual-window)
+#   BF FP Rate (1M):   0.000467%
+#   Throughput Overhead (1M pkts): 18.39%
