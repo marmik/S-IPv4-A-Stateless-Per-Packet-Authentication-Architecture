@@ -1,5 +1,5 @@
 /*
- * bench_crypto.c — HMAC token generation latency benchmark
+ * bench_crypto.c — HMAC token generation latency benchmark (S-IPv4 V2)
  *
  * Calls compute_token() 100,000 times, records each sample with
  * clock_gettime(CLOCK_MONOTONIC), then prints summary statistics.
@@ -8,10 +8,30 @@
  *   CRYPTO_BENCH <mean_us> <std_us> <min_us> <max_us> <p50_us> <p95_us> <p99_us>
  *
  * Also writes raw samples to bench/crypto_samples.csv for plotting.
+ *
+ * V2 COMPLIANCE NOTE:
+ *   This file contains zero deprecated OpenSSL API references (no HMAC_CTX_new,
+ *   HMAC_Init_ex, HMAC_Update, HMAC_Final, or HMAC_CTX_free).
+ *   All cryptographic operations go through compute_token() in poc_v2/crypto_core.c,
+ *   which is implemented exclusively on OpenSSL 3.0 EVP_MAC primitives.
+ *   The build guard below enforces that this file cannot be linked against
+ *   the V1 crypto_core (which used the deprecated HMAC_CTX API).
  */
 
 #include "../crypto_core.h"
 #include "../s_ipv4.h"
+
+/* ── V2 build guard ─────────────────────────────────────────────────
+ * S_IPV4_CRYPTO_V2 is defined in poc_v2/crypto_core.h.
+ * If this bench is accidentally built against the V1 crypto_core.h
+ * (which does NOT define this macro), the build fails immediately
+ * rather than silently linking deprecated HMAC_CTX code.
+ * ────────────────────────────────────────────────────────────────── */
+#ifndef S_IPV4_CRYPTO_V2
+#  error "bench_crypto.c must be built against poc_v2/crypto_core.h (V2 EVP_MAC). " \
+         "Do not link against poc/crypto_core.h (V1 HMAC_CTX). " \
+         "Run: cd poc_v2/bench && make clean && make"
+#endif
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,7 +56,7 @@ static double timespec_us(struct timespec *start, struct timespec *end) {
 int main(void)
 {
     /* ── Key / payload setup ────────────────────────────────────── */
-    static const uint8_t epoch_key[EPOCH_KEY_LEN] = {
+    static const uint8_t epoch_key[S_IPV4_KEY_LEN] = {
         0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
         0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
         0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
@@ -46,7 +66,7 @@ int main(void)
     uint8_t payload[PAYLOAD_SIZE];
     memset(payload, 0xAB, PAYLOAD_SIZE);
 
-    uint8_t out_hmac[S_IPV4_HMAC_LEN];
+    uint8_t out_hmac[16];                          /* S_IPV4_HMAC_LEN = 16 */
     uint64_t ts    = (uint64_t)time(NULL);
     uint64_t nonce = 0x1234567890ABCDEFULL;
 
@@ -55,7 +75,7 @@ int main(void)
 
     /* ── Warm-up (100 iterations) ───────────────────────────────── */
     for (int i = 0; i < 100; i++) {
-        compute_token(epoch_key, ts, nonce + (uint64_t)i,
+        crypto_compute_token(epoch_key, ts, nonce + (uint64_t)i,
                       payload, PAYLOAD_SIZE, out_hmac);
     }
 
@@ -64,7 +84,7 @@ int main(void)
     for (int i = 0; i < NUM_SAMPLES; i++) {
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
-        compute_token(epoch_key, ts, nonce + (uint64_t)i,
+        crypto_compute_token(epoch_key, ts, nonce + (uint64_t)i,
                       payload, PAYLOAD_SIZE, out_hmac);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         samples[i] = timespec_us(&t0, &t1);

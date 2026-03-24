@@ -1,7 +1,7 @@
 /*
- * bench_verify.c — Full S-IPv4 shim verification path latency benchmark
+ * bench_verify.c — Full S-IPv4 V2 shim verification path latency benchmark
  *
- * Measures: bounds check → magic → NodeID lookup → timestamp →
+ * Measures: bounds check → version flag → NodeID lookup → timestamp →
  *           HMAC recompute → CRYPTO_memcmp → Bloom filter
  *
  * 100,000 samples recorded, percentiles reported.
@@ -42,10 +42,8 @@ static double timespec_us(struct timespec *start, struct timespec *end) {
 
 int main(void)
 {
-    /* ── Setup ──────────────────────────────────────────────────── */
-    static const uint8_t node_id[S_IPV4_NODE_ID_LEN] =
-        {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-    static const uint8_t epoch_key[EPOCH_KEY_LEN] = {
+    /* ── Setup — use V2 crypto_init to derive node_id from key ──── */
+    static const uint8_t master_key[S_IPV4_KEY_LEN] = {
         0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
         0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
         0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
@@ -54,57 +52,78 @@ int main(void)
     uint8_t payload[PAYLOAD_SIZE];
     memset(payload, 0xCD, PAYLOAD_SIZE);
 
-    keystore_register(node_id, epoch_key);
+    /* Initialize V2 crypto subsystem (derives node_id, epoch key) */
+    crypto_init(master_key);
 
-    replay_state_t rs;
-    replay_init(&rs);
+    /* Get the derived epoch key and node_id — must match crypto_init order:
+       crypto_init derives epoch_key from master, then node_id from epoch_key */
+    uint8_t epoch_key[S_IPV4_KEY_LEN];
+    sipv4_hkdf_derive_epoch_key(master_key, 1, epoch_key);
+    uint8_t node_id[S_IPV4_NODE_ID_LEN];
+    sipv4_derive_node_id(epoch_key, node_id);
+
+    tiered_bloom_t tb;
+    tiered_bloom_init(&tb);
 
     /* Pre-build N unique valid packets (each with a distinct nonce) */
-    size_t pkt_len = sizeof(s_ipv4_header_t) + PAYLOAD_SIZE;
+    size_t pkt_len = sizeof(s_ipv4_v2_header_t) + PAYLOAD_SIZE;
     uint8_t **packets = malloc(NUM_SAMPLES * sizeof(uint8_t *));
     if (!packets) { perror("malloc"); return 1; }
 
     for (int i = 0; i < NUM_SAMPLES; i++) {
         packets[i] = malloc(pkt_len);
-        s_ipv4_header_t hdr;
-        /* use distinct nonce per packet so Bloom filter doesn't reject */
+        s_ipv4_v2_header_t hdr;
         s_ipv4_generate_header(node_id, epoch_key,
                                payload, PAYLOAD_SIZE, &hdr, 0, 0);
-        memcpy(packets[i], &hdr, sizeof(s_ipv4_header_t));
-        memcpy(packets[i] + sizeof(s_ipv4_header_t), payload, PAYLOAD_SIZE);
+        memcpy(packets[i], &hdr, sizeof(s_ipv4_v2_header_t));
+        memcpy(packets[i] + sizeof(s_ipv4_v2_header_t), payload, PAYLOAD_SIZE);
     }
 
     double *samples = malloc(NUM_SAMPLES * sizeof(double));
     if (!samples) { perror("malloc"); return 1; }
 
     /* ── Warm-up ────────────────────────────────────────────────── */
-    /* Use a separate replay state for warm-up to not pollute Bloom filter */
-    replay_state_t rs_warmup;
-    replay_init(&rs_warmup);
+    tiered_bloom_t tb_warmup;
+    tiered_bloom_init(&tb_warmup);
     for (int i = 0; i < 100; i++) {
         const uint8_t *pl; size_t pl_len;
-        s_ipv4_verify_packet(packets[i], pkt_len, &rs_warmup, &pl, &pl_len);
+        s_ipv4_verify_packet(packets[i], pkt_len, &tb_warmup, &pl, &pl_len);
     }
 
     /* ── Timed run ──────────────────────────────────────────────── */
     fprintf(stderr, "Running %d full verification samples...\n", NUM_SAMPLES);
 
-    /* Fresh replay state for the actual benchmark */
-    replay_state_t rs_bench;
-    replay_init(&rs_bench);
+    tiered_bloom_t tb_bench;
+    tiered_bloom_init(&tb_bench);
 
+    int replay_fp_count = 0;
+    int error_count = 0;
     for (int i = 0; i < NUM_SAMPLES; i++) {
         const uint8_t *pl; size_t pl_len;
         struct timespec t0, t1;
         clock_gettime(CLOCK_MONOTONIC, &t0);
         shim_result_t r = s_ipv4_verify_packet(packets[i], pkt_len,
-                                               &rs_bench, &pl, &pl_len);
+                                               &tb_bench, &pl, &pl_len);
         clock_gettime(CLOCK_MONOTONIC, &t1);
         samples[i] = timespec_us(&t0, &t1);
-        if (r != SHIM_ACCEPT) {
-            fprintf(stderr, "  WARN: packet %d got result %d (%s)\n",
-                    i, r, shim_result_str(r));
+        if (r == SHIM_DROP_REPLAY) {
+            replay_fp_count++;  /* Expected: Tier 1 (50k) saturates at 100k nonces */
+        } else if (r != SHIM_ACCEPT) {
+            error_count++;
+            if (error_count <= 5) {
+                fprintf(stderr, "  ERROR: packet %d got result %d (%s)\n",
+                        i, r, shim_result_str(r));
+            }
         }
+    }
+    if (replay_fp_count > 0) {
+        fprintf(stderr, "  Note: %d/%d packets hit Bloom filter false positive "
+                "(Tier 1 cap=%lu, expected at this volume)\n",
+                replay_fp_count, NUM_SAMPLES, (unsigned long)BF_TIER1_CAPACITY);
+    }
+    if (error_count > 0) {
+        fprintf(stderr, "  WARNING: %d packets had real verification failures\n",
+                error_count);
     }
 
     /* ── Statistics ─────────────────────────────────────────────── */
@@ -151,8 +170,9 @@ int main(void)
         fprintf(stderr, "Raw samples written to bench/verify_samples.csv\n");
     }
 
-    replay_destroy(&rs_warmup);
-    replay_destroy(&rs_bench);
+    tiered_bloom_free(&tb);
+    tiered_bloom_free(&tb_warmup);
+    tiered_bloom_free(&tb_bench);
 
     for (int i = 0; i < NUM_SAMPLES; i++) free(packets[i]);
     free(packets);

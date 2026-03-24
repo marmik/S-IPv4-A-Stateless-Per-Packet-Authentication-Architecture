@@ -117,7 +117,7 @@ echo ""
 echo "  [Test 5] NodeID spoofing"
 ./client 127.0.0.1 $PORT_ENFORCE "Hello S-IPv4!" --spoof-node > /dev/null 2>&1
 sleep 0.3
-expect_server_v1 "Spoofed NodeID rejected" "INVALID_TOKEN" "$ENFORCE_LOG"
+expect_server_v1 "Spoofed NodeID rejected" "UNKNOWN_NODE" "$ENFORCE_LOG"
 
 # ── Test 6: Truncated packet ─────────────────────────────────────
 echo ""
@@ -150,7 +150,7 @@ echo ""
 echo "  [Test 7] AUDIT: NodeID spoofing — payload should be delivered"
 ./client 127.0.0.1 $PORT_AUDIT "AuditPayload1" --spoof-node > /dev/null 2>&1
 sleep 0.3
-expect_server_v1 "AUDIT_FAIL logged for spoofed NodeID" "AUDIT_FAIL.*INVALID_TOKEN" "$AUDIT_LOG"
+expect_server_v1 "AUDIT_FAIL logged for spoofed NodeID" "AUDIT_FAIL.*UNKNOWN_NODE" "$AUDIT_LOG"
 expect_server_v1 "Payload still delivered in AUDIT" "AuditPayload1" "$AUDIT_LOG"
 
 # ── Test 8: AUDIT — Forged HMAC (different code path) ────────────

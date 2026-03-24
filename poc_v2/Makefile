@@ -11,7 +11,7 @@ CFLAGS   := -Wall -Wextra -Wpedantic -std=c11 -O2 \
 LDFLAGS  := -L$(OPENSSL)/lib -lssl -lcrypto
 
 # Source files shared by both client and server
-COMMON_SRC := crypto_core.c replay_protection.c
+COMMON_SRC := crypto_core.c replay_protection.c s_ipv4_shim.c
 
 .PHONY: all clean
 

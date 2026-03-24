@@ -1,4 +1,5 @@
 #include "s_ipv4.h"
+#include "s_ipv4_shim.h"
 #include "crypto_core.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -23,6 +24,7 @@ int opt_spoof_node = 0;
 int opt_truncated = 0;
 int opt_oversize = 0;
 int opt_v1_flag = 0;
+int opt_compact = 0;
 int opt_flood = 1;
 uint64_t opt_force_fill = 0;
 
@@ -47,6 +49,7 @@ int main(int argc, char *argv[]) {
         else if (strcmp(argv[i], "--truncated") == 0) opt_truncated = 1;
         else if (strcmp(argv[i], "--oversize") == 0) opt_oversize = 1;
         else if (strcmp(argv[i], "--v1-flag") == 0) opt_v1_flag = 1;
+        else if (strcmp(argv[i], "--compact") == 0) opt_compact = 1;
         else if (strncmp(argv[i], "--flood=", 8) == 0) opt_flood = atoi(argv[i] + 8);
         else if (strncmp(argv[i], "--force-fill=", 13) == 0) {
 #ifdef SIPV4_TEST_MODE
@@ -109,57 +112,75 @@ int main(int argc, char *argv[]) {
     servaddr.sin_addr.s_addr = inet_addr(ip);
 
     for (int count = 0; count < opt_flood; count++) {
-        uint8_t buf[S_IPV4_V2_HEADER_SIZE + payload_len];
-        s_ipv4_v2_header_t hdr;
-        memset(&hdr, 0, sizeof(hdr));
+        if (opt_compact) {
+            /* ── Compact mode path ─────────────────────────── */
+            uint8_t buf[S_IPV4_COMPACT_HEADER_SIZE + payload_len];
+            s_ipv4_compact_header_t chdr;
 
-        hdr.s_flag = opt_v1_flag ? S_IPV4_FLAG_V1 : S_IPV4_FLAG_V2;
+            s_ipv4_generate_header_compact(entry.node_id, entry.current_key,
+                                            (const uint8_t *)payload_str, payload_len,
+                                            &chdr, 0);
+            uint32_t n_val32 = ntohl(chdr.nonce);
+            printf("[COMPACT] Sent packet! Nonce: 0x%08X\n", n_val32);
 
-        if (opt_spoof_node) {
-            memset(hdr.node_id, 0xBB, 8);
+            memcpy(buf, &chdr, S_IPV4_COMPACT_HEADER_SIZE);
+            memcpy(buf + S_IPV4_COMPACT_HEADER_SIZE, payload_str, payload_len);
+            sendto(sock, buf, S_IPV4_COMPACT_HEADER_SIZE + payload_len, 0,
+                   (struct sockaddr *)&servaddr, sizeof(servaddr));
         } else {
-            memcpy(hdr.node_id, entry.node_id, 8);
+            /* ── Full V2 mode path ─────────────────────────── */
+            uint8_t buf[S_IPV4_V2_HEADER_SIZE + payload_len];
+            s_ipv4_v2_header_t hdr;
+            memset(&hdr, 0, sizeof(hdr));
+
+            hdr.s_flag = opt_v1_flag ? S_IPV4_FLAG_V1 : S_IPV4_FLAG_V2;
+
+            if (opt_spoof_node) {
+                memset(hdr.node_id, 0xBB, 8);
+            } else {
+                memcpy(hdr.node_id, entry.node_id, 8);
+            }
+
+            struct timespec ts;
+            clock_gettime(CLOCK_MONOTONIC, &ts);
+            
+            static uint64_t nonce_ctr = 0;
+            if (nonce_ctr == 0) nonce_ctr = ts.tv_nsec ^ (uint64_t)getpid();
+            
+            if (opt_replay && replay_nonce != 0) {
+                hdr.nonce = replay_nonce;
+                hdr.timestamp = replay_ts;
+            } else {
+                hdr.timestamp = ts.tv_sec;
+                hdr.nonce = nonce_ctr++;
+                if (opt_replay) hdr.nonce--; // generic replay
+            }
+            
+            hdr.key_ver = entry.key_ver;
+
+            uint8_t payload[S_IPV4_MAX_PAYLOAD];
+            memset(payload, 0x42, payload_len);
+            if (!opt_oversize) memcpy(payload, payload_str, payload_len);
+
+            crypto_compute_token(entry.current_key, hdr.timestamp, hdr.nonce, payload, payload_len, hdr.hmac);
+
+            if (opt_bad_hmac) hdr.hmac[0] ^= 0xFF;
+
+            printf("Sent packet! Nonce: 0x%016llX Timestamp: %llu\n", (unsigned long long)hdr.nonce, (unsigned long long)hdr.timestamp);
+
+            hdr.timestamp = htobe64(hdr.timestamp);
+            hdr.nonce = htobe64(hdr.nonce);
+            hdr.key_ver = htons(hdr.key_ver);
+
+            size_t send_len = opt_truncated ? 3 : S_IPV4_V2_HEADER_SIZE + payload_len;
+
+            memcpy(buf, &hdr, S_IPV4_V2_HEADER_SIZE);
+            if (!opt_truncated) {
+                memcpy(buf + S_IPV4_V2_HEADER_SIZE, payload, payload_len);
+            }
+
+            sendto(sock, buf, send_len, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
         }
-
-        struct timespec ts;
-        clock_gettime(CLOCK_MONOTONIC, &ts);
-        
-        static uint64_t nonce_ctr = 0;
-        if (nonce_ctr == 0) nonce_ctr = ts.tv_nsec ^ (uint64_t)getpid();
-        
-        if (opt_replay && replay_nonce != 0) {
-            hdr.nonce = replay_nonce;
-            hdr.timestamp = replay_ts;
-        } else {
-            hdr.timestamp = ts.tv_sec;
-            hdr.nonce = nonce_ctr++;
-            if (opt_replay) hdr.nonce--; // generic replay
-        }
-        
-        hdr.key_ver = entry.key_ver;
-
-        uint8_t payload[S_IPV4_MAX_PAYLOAD];
-        memset(payload, 0x42, payload_len);
-        if (!opt_oversize) memcpy(payload, payload_str, payload_len);
-
-        crypto_compute_token(entry.current_key, hdr.timestamp, hdr.nonce, payload, payload_len, hdr.hmac);
-
-        if (opt_bad_hmac) hdr.hmac[0] ^= 0xFF;
-
-        printf("Sent packet! Nonce: 0x%016llX Timestamp: %llu\n", (unsigned long long)hdr.nonce, (unsigned long long)hdr.timestamp);
-
-        hdr.timestamp = htobe64(hdr.timestamp);
-        hdr.nonce = htobe64(hdr.nonce);
-        hdr.key_ver = htons(hdr.key_ver);
-
-        size_t send_len = opt_truncated ? 3 : S_IPV4_V2_HEADER_SIZE + payload_len;
-
-        memcpy(buf, &hdr, S_IPV4_V2_HEADER_SIZE);
-        if (!opt_truncated) {
-            memcpy(buf + S_IPV4_V2_HEADER_SIZE, payload, payload_len);
-        }
-
-        sendto(sock, buf, send_len, 0, (struct sockaddr *)&servaddr, sizeof(servaddr));
     }
     
     close(sock);

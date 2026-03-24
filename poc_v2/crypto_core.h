@@ -1,4 +1,5 @@
 #ifndef CRYPTO_CORE_H
+#define S_IPV4_CRYPTO_V2  1   /* Marks this as the V2 EVP_MAC clean implementation */
 #define CRYPTO_CORE_H
 
 #include "s_ipv4.h"
@@ -23,6 +24,7 @@ void sipv4_hkdf_derive_epoch_key(const uint8_t *master_secret,
 void   crypto_init(const uint8_t *master_secret);
 void   crypto_rotate_epoch(void);
 int    crypto_get_entry(const uint8_t *node_id, epoch_key_entry_t *out);
+int    crypto_get_entry_compact(const uint8_t *node_id_4, epoch_key_entry_t *out);
 
 /* ── Token operations ───────────────────────────────────────────── */
 void   crypto_compute_token(const uint8_t *epoch_key,
@@ -34,5 +36,16 @@ shim_result_t crypto_verify_token(const epoch_key_entry_t *entry,
                                    uint64_t timestamp, uint64_t nonce,
                                    const uint8_t *payload, size_t payload_len,
                                    const uint8_t *token_in);
+
+/* ── Compact mode (HMAC-96) token operations ────────────────────── */
+void   crypto_compute_token_compact(const uint8_t *epoch_key,
+                                     uint32_t nonce,
+                                     const uint8_t *payload, size_t payload_len,
+                                     uint8_t *token_out_12);
+
+shim_result_t crypto_verify_token_compact(const epoch_key_entry_t *entry,
+                                           uint32_t nonce,
+                                           const uint8_t *payload, size_t payload_len,
+                                           const uint8_t *token_in_12);
 
 #endif /* CRYPTO_CORE_H */

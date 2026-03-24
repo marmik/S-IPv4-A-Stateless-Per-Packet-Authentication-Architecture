@@ -95,6 +95,15 @@ int crypto_get_entry(const uint8_t *node_id, epoch_key_entry_t *out) {
     return 0;
 }
 
+int crypto_get_entry_compact(const uint8_t *node_id_4, epoch_key_entry_t *out) {
+    /* Compact mode uses first 4 bytes of the full 8-byte node_id */
+    if (CRYPTO_memcmp(node_id_4, global_entry.node_id, 4) == 0) {
+        *out = global_entry;
+        return 1;
+    }
+    return 0;
+}
+
 void crypto_compute_token(const uint8_t *epoch_key, uint64_t timestamp, uint64_t nonce, const uint8_t *payload, size_t payload_len, uint8_t *token_out) {
     if (!t_mac) {
         t_mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
@@ -144,5 +153,67 @@ shim_result_t crypto_verify_token(const epoch_key_entry_t *entry, uint64_t times
         }
     }
     
+    return SHIM_DROP_INVALID_TOKEN;
+}
+
+/* ── Compact mode (HMAC-96) ─────────────────────────────────────── */
+
+void crypto_compute_token_compact(const uint8_t *epoch_key,
+                                   uint32_t nonce,
+                                   const uint8_t *payload, size_t payload_len,
+                                   uint8_t *token_out_12)
+{
+    if (!t_mac) {
+        t_mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
+    }
+
+    /* Hash payload first (same pattern as full mode) */
+    uint8_t payload_hash[32];
+    unsigned int md_len;
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(mdctx, payload, payload_len);
+    EVP_DigestFinal_ex(mdctx, payload_hash, &md_len);
+    EVP_MD_CTX_free(mdctx);
+
+    uint32_t n_be = htobe32(nonce);
+
+    EVP_MAC_CTX *t_ctx = EVP_MAC_CTX_new(t_mac);
+    OSSL_PARAM params[] = {
+        OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
+        OSSL_PARAM_END
+    };
+    EVP_MAC_init(t_ctx, epoch_key, S_IPV4_KEY_LEN, params);
+    EVP_MAC_update(t_ctx, payload_hash, 32);
+    EVP_MAC_update(t_ctx, (const unsigned char *)&n_be, 4);
+
+    uint8_t full_mac[32];
+    size_t out_len = 32;
+    EVP_MAC_final(t_ctx, full_mac, &out_len, 32);
+    EVP_MAC_CTX_free(t_ctx);
+
+    /* Truncate to 12 bytes (HMAC-96 per RFC 2404) */
+    memcpy(token_out_12, full_mac, 12);
+}
+
+shim_result_t crypto_verify_token_compact(const epoch_key_entry_t *entry,
+                                           uint32_t nonce,
+                                           const uint8_t *payload, size_t payload_len,
+                                           const uint8_t *token_in_12)
+{
+    uint8_t computed[12];
+    crypto_compute_token_compact(entry->current_key, nonce, payload, payload_len, computed);
+
+    if (CRYPTO_memcmp(computed, token_in_12, 12) == 0) {
+        return SHIM_ACCEPT;
+    }
+
+    if (entry->has_previous) {
+        crypto_compute_token_compact(entry->previous_key, nonce, payload, payload_len, computed);
+        if (CRYPTO_memcmp(computed, token_in_12, 12) == 0) {
+            return SHIM_ACCEPT;
+        }
+    }
+
     return SHIM_DROP_INVALID_TOKEN;
 }

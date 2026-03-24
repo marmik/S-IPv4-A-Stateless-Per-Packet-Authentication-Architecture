@@ -1,7 +1,7 @@
 /*
- * bench_throughput.c — Loopback UDP throughput benchmark
+ * bench_throughput.c — Loopback UDP throughput benchmark (V2)
  *
- * Measures packets/sec and Mbps with and without S-IPv4 header.
+ * Measures packets/sec and Mbps with and without S-IPv4 V2 header.
  * Uses a forked sender/receiver pair over localhost.
  *
  * Runs at N = 10000, 100000, 1000000.
@@ -21,7 +21,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/wait.h>
-#include <signal.h>
+
 #include <inttypes.h>
 
 #define PAYLOAD_SIZE 128
@@ -41,10 +41,10 @@ static double timespec_sec(struct timespec *start, struct timespec *end) {
            (double)(end->tv_nsec - start->tv_nsec) / 1e9;
 }
 
-/* ── Demo key material ──────────────────────────────────────────── */
-static const uint8_t NODE_ID[S_IPV4_NODE_ID_LEN] =
-    {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08};
-static const uint8_t EPOCH_KEY_DATA[EPOCH_KEY_LEN] = {
+/* ── Demo key material (V2: use crypto_init-derived keys) ──────── */
+static uint8_t NODE_ID[S_IPV4_NODE_ID_LEN];
+static uint8_t EPOCH_KEY_DATA[S_IPV4_KEY_LEN];
+static const uint8_t MASTER_KEY[S_IPV4_KEY_LEN] = {
     0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,
     0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
     0x10,0x11,0x12,0x13,0x14,0x15,0x16,0x17,
@@ -53,9 +53,6 @@ static const uint8_t EPOCH_KEY_DATA[EPOCH_KEY_LEN] = {
 
 /*
  * run_throughput_test — send N packets via loopback
- *
- * with_sipv4: if true, prepend S-IPv4 header.
- * Returns elapsed seconds.
  */
 static double run_throughput_test(int N, int with_sipv4, int port)
 {
@@ -71,7 +68,6 @@ static double run_throughput_test(int N, int with_sipv4, int port)
 #ifdef SO_REUSEPORT
         setsockopt(sock, SOL_SOCKET, SO_REUSEPORT, &yes, sizeof(yes));
 #endif
-        /* Increase receive buffer to handle bursts */
         int rcvbuf = 8 * 1024 * 1024;
         setsockopt(sock, SOL_SOCKET, SO_RCVBUF, &rcvbuf, sizeof(rcvbuf));
 
@@ -96,7 +92,6 @@ static double run_throughput_test(int N, int with_sipv4, int port)
     usleep(100000); /* 100 ms for receiver to bind */
 
     int sock = socket(AF_INET, SOCK_DGRAM, 0);
-    /* Increase send buffer */
     int sndbuf = 8 * 1024 * 1024;
     setsockopt(sock, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof(sndbuf));
 
@@ -109,13 +104,13 @@ static double run_throughput_test(int N, int with_sipv4, int port)
     uint8_t *pkt;
 
     if (with_sipv4) {
-        pkt_len = sizeof(s_ipv4_header_t) + PAYLOAD_SIZE;
+        pkt_len = sizeof(s_ipv4_v2_header_t) + PAYLOAD_SIZE;
         pkt     = malloc(pkt_len);
-        s_ipv4_header_t hdr;
+        s_ipv4_v2_header_t hdr;
         s_ipv4_generate_header(NODE_ID, EPOCH_KEY_DATA,
                                payload, PAYLOAD_SIZE, &hdr, 0, 0);
-        memcpy(pkt, &hdr, sizeof(s_ipv4_header_t));
-        memcpy(pkt + sizeof(s_ipv4_header_t), payload, PAYLOAD_SIZE);
+        memcpy(pkt, &hdr, sizeof(s_ipv4_v2_header_t));
+        memcpy(pkt + sizeof(s_ipv4_v2_header_t), payload, PAYLOAD_SIZE);
     } else {
         pkt_len = PAYLOAD_SIZE;
         pkt     = malloc(pkt_len);
@@ -125,7 +120,6 @@ static double run_throughput_test(int N, int with_sipv4, int port)
     struct timespec t0, t1;
     clock_gettime(CLOCK_MONOTONIC, &t0);
 
-    /* BOTTLENECK FIX: connect() avoids per-packet routing lookup */
     if (connect(sock, (struct sockaddr *)&dst, sizeof(dst)) < 0) {
         perror("connect");
         exit(1);
@@ -133,11 +127,10 @@ static double run_throughput_test(int N, int with_sipv4, int port)
 
     for (int i = 0; i < N; i++) {
         if (with_sipv4) {
-            /* Regenerate header per packet for realistic overhead */
-            s_ipv4_header_t hdr;
+            s_ipv4_v2_header_t hdr;
             s_ipv4_generate_header(NODE_ID, EPOCH_KEY_DATA,
                                    payload, PAYLOAD_SIZE, &hdr, 0, 0);
-            memcpy(pkt, &hdr, sizeof(s_ipv4_header_t));
+            memcpy(pkt, &hdr, sizeof(s_ipv4_v2_header_t));
         }
         send(sock, pkt, pkt_len, 0);
     }
@@ -154,12 +147,18 @@ static double run_throughput_test(int N, int with_sipv4, int port)
 
 int main(void)
 {
+    /* Initialize V2 crypto subsystem */
+    crypto_init(MASTER_KEY);
+    /* Derive epoch_key first, then node_id from epoch_key (matches crypto_init order) */
+    sipv4_hkdf_derive_epoch_key(MASTER_KEY, 1, EPOCH_KEY_DATA);
+    sipv4_derive_node_id(EPOCH_KEY_DATA, NODE_ID);
+
     int test_sizes[] = {10000, 100000, 1000000};
     int num_tests    = 3;
 
     fprintf(stderr,
         "\n╔══════════════════════════════════════════════════╗\n"
-        "║  Throughput Benchmark — Loopback UDP             ║\n"
+        "║  Throughput Benchmark — Loopback UDP (V2)       ║\n"
         "╚══════════════════════════════════════════════════╝\n\n");
 
     for (int t = 0; t < num_tests; t++) {
@@ -171,10 +170,10 @@ int main(void)
         double raw_pps = N / raw_sec;
         double raw_mbps = (N * (double)PAYLOAD_SIZE * 8.0) / (raw_sec * 1e6);
 
-        fprintf(stderr, "  [N=%d] Running S-IPv4 UDP...\n", N);
+        fprintf(stderr, "  [N=%d] Running S-IPv4 V2 UDP...\n", N);
         double sipv4_sec = run_throughput_test(N, 1, port + 1);
         double sipv4_pps = N / sipv4_sec;
-        size_t sipv4_pkt = sizeof(s_ipv4_header_t) + PAYLOAD_SIZE;
+        size_t sipv4_pkt = sizeof(s_ipv4_v2_header_t) + PAYLOAD_SIZE;
         double sipv4_mbps = (N * (double)sipv4_pkt * 8.0) / (sipv4_sec * 1e6);
 
         double overhead_pct = ((raw_sec > 0) ?
