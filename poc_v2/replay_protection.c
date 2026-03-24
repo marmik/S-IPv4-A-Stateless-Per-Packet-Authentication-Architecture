@@ -27,9 +27,9 @@ static void bf_free(bloom_filter_t *bf) {
     if (bf->bits) free(bf->bits);
 }
 
-static int bf_check(const bloom_filter_t *bf, uint64_t nonce) {
+static int bf_check_hashes(const bloom_filter_t *bf, const uint64_t *hashes) {
     for (uint32_t i=0; i<bf->k_funcs; i++) {
-        uint64_t id = fnv1a_hash(i, nonce) % bf->m_bits;
+        uint64_t id = hashes[i] % bf->m_bits;
         if (!(bf->bits[id / 8] & (1 << (id % 8)))) {
             return 0; // Not seen
         }
@@ -37,19 +37,32 @@ static int bf_check(const bloom_filter_t *bf, uint64_t nonce) {
     return 1; // seen
 }
 
-static void bf_insert(bloom_filter_t *bf, uint64_t nonce) {
+static void bf_insert_hashes(bloom_filter_t *bf, const uint64_t *hashes) {
     for (uint32_t i=0; i<bf->k_funcs; i++) {
-        uint64_t id = fnv1a_hash(i, nonce) % bf->m_bits;
+        uint64_t id = hashes[i] % bf->m_bits;
         bf->bits[id / 8] |= (1 << (id % 8));
     }
     bf->insert_count++;
+}
+
+static void compute_hashes(uint64_t nonce, uint64_t *out) {
+    for (int i=0; i<BF_HASH_FUNCS; i++) {
+        out[i] = fnv1a_hash(i, nonce);
+    }
 }
 
 int tiered_bloom_init(tiered_bloom_t *tb) {
     memset(tb, 0, sizeof(*tb));
     if (bf_init(&tb->tier1, BF_TIER1_CAPACITY) != 0) return -1;
     if (bf_init(&tb->tier2, BF_TIER2_CAPACITY) != 0) return -1;
-    if (bf_init(&tb->tier3, BF_TIER3_CAPACITY) != 0) return -1;
+    
+    /* Fix A: Lazy initialization of Tier 3 */
+    tb->tier3.capacity = BF_TIER3_CAPACITY;
+    tb->tier3.m_bits = BF_TIER3_CAPACITY * 10;
+    tb->tier3.k_funcs = BF_HASH_FUNCS;
+    tb->tier3.insert_count = 0;
+    tb->tier3.bits = NULL;
+    
     return 0;
 }
 
@@ -64,16 +77,20 @@ double tiered_bloom_fill_pct(const tiered_bloom_t *tb) {
 }
 
 int tiered_bloom_check(tiered_bloom_t *tb, uint64_t nonce) {
-    if (bf_check(&tb->tier1, nonce)) return 1;
-    if (bf_check(&tb->tier2, nonce)) return 1;
-    if (tb->tier3_active && bf_check(&tb->tier3, nonce)) return 1;
+    uint64_t h[BF_HASH_FUNCS];
+    compute_hashes(nonce, h);
+    if (tb->tier1.insert_count > 0 && bf_check_hashes(&tb->tier1, h)) return 1;
+    if (tb->tier2.insert_count > 0 && bf_check_hashes(&tb->tier2, h)) return 1;
+    if (tb->tier3_active && tb->tier3.bits && bf_check_hashes(&tb->tier3, h)) return 1;
     return 0;
 }
 
 void tiered_bloom_insert(tiered_bloom_t *tb, uint64_t nonce) {
-    bf_insert(&tb->tier1, nonce);
-    bf_insert(&tb->tier2, nonce);
-    if (tb->tier3_active) bf_insert(&tb->tier3, nonce);
+    uint64_t h[BF_HASH_FUNCS];
+    compute_hashes(nonce, h);
+    bf_insert_hashes(&tb->tier1, h);
+    bf_insert_hashes(&tb->tier2, h);
+    if (tb->tier3_active && tb->tier3.bits) bf_insert_hashes(&tb->tier3, h);
     
     double fill = tiered_bloom_fill_pct(tb);
     struct timespec ts;
@@ -83,6 +100,9 @@ void tiered_bloom_insert(tiered_bloom_t *tb, uint64_t nonce) {
     if (!tb->degraded_mode && fill >= FILL_DEGRADED_PCT) {
         tb->degraded_mode = 1;
         tb->tier3_active = 1;
+        if (!tb->tier3.bits) {
+            tb->tier3.bits = calloc((tb->tier3.m_bits + 7) / 8, 1);
+        }
         tb->degraded_since_sec = now_sec;
         fprintf(stderr, "[S-IPv4 V2] DEGRADED_MODE activated — fill %.1f%%\n", fill);
     } else if (tb->degraded_mode && fill < 30.0) {

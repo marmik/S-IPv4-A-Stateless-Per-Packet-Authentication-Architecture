@@ -117,12 +117,25 @@ void s_ipv4_generate_header(const uint8_t  node_id[S_IPV4_NODE_ID_LEN],
 /*  Receiver side — validate packet                                  */
 /* ══════════════════════════════════════════════════════════════════ */
 
+#ifdef SIPV4_PROFILE
+uint64_t prof_t1 = 0;
+uint64_t prof_t2 = 0;
+uint64_t prof_t3 = 0;
+uint64_t prof_t4 = 0;
+uint64_t prof_t5 = 0;
+uint64_t prof_count = 0;
+#endif
+
 shim_result_t s_ipv4_verify_packet(const uint8_t   *packet,
                                    size_t           packet_len,
                                    tiered_bloom_t  *rs,
                                    const uint8_t  **out_payload,
                                    size_t          *out_payload_len)
 {
+#ifdef SIPV4_PROFILE
+    struct timespec ts0, ts1, ts2, ts3, ts4, ts5;
+    clock_gettime(CLOCK_MONOTONIC, &ts0);
+#endif
     /* 1. Bounds check */
     if (packet_len < sizeof(s_ipv4_v2_header_t)) {
         return SHIM_DROP_TRUNCATED;
@@ -137,11 +150,19 @@ shim_result_t s_ipv4_verify_packet(const uint8_t   *packet,
         return SHIM_DROP_BAD_VERSION;
     }
 
+#ifdef SIPV4_PROFILE
+    clock_gettime(CLOCK_MONOTONIC, &ts1);
+#endif
+
     /* 3. Key lookup via V2 crypto store */
     epoch_key_entry_t entry;
     if (!crypto_get_entry(hdr->node_id, &entry)) {
         return SHIM_DROP_UNKNOWN_NODE;
     }
+
+#ifdef SIPV4_PROFILE
+    clock_gettime(CLOCK_MONOTONIC, &ts2);
+#endif
 
     /* Decode wire-format fields */
     uint64_t ts    = be64toh_s(hdr->timestamp);
@@ -165,6 +186,10 @@ shim_result_t s_ipv4_verify_packet(const uint8_t   *packet,
         if (diff > effective_window) return SHIM_DROP_EXPIRED;
     }
 
+#ifdef SIPV4_PROFILE
+    clock_gettime(CLOCK_MONOTONIC, &ts3);
+#endif
+
     /* 5. HMAC verification (tries current key, then previous key) */
     shim_result_t hmac_res = crypto_verify_token(&entry, ts, nonce,
                                                   payload, payload_len_inner,
@@ -173,11 +198,25 @@ shim_result_t s_ipv4_verify_packet(const uint8_t   *packet,
         return SHIM_DROP_INVALID_TOKEN;
     }
 
+#ifdef SIPV4_PROFILE
+    clock_gettime(CLOCK_MONOTONIC, &ts4);
+#endif
+
     /* 6. Bloom filter replay check */
     if (tiered_bloom_check(rs, nonce)) {
         return SHIM_DROP_REPLAY;
     }
     tiered_bloom_insert(rs, nonce);
+
+#ifdef SIPV4_PROFILE
+    clock_gettime(CLOCK_MONOTONIC, &ts5);
+    prof_t1 += (ts1.tv_sec - ts0.tv_sec)*1000000000ULL + (ts1.tv_nsec - ts0.tv_nsec);
+    prof_t2 += (ts2.tv_sec - ts1.tv_sec)*1000000000ULL + (ts2.tv_nsec - ts1.tv_nsec);
+    prof_t3 += (ts3.tv_sec - ts2.tv_sec)*1000000000ULL + (ts3.tv_nsec - ts2.tv_nsec);
+    prof_t4 += (ts4.tv_sec - ts3.tv_sec)*1000000000ULL + (ts4.tv_nsec - ts3.tv_nsec);
+    prof_t5 += (ts5.tv_sec - ts4.tv_sec)*1000000000ULL + (ts5.tv_nsec - ts4.tv_nsec);
+    prof_count++;
+#endif
 
     /* 7. Accept */
     if (out_payload)     *out_payload     = payload;

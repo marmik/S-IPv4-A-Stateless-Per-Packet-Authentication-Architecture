@@ -16,8 +16,11 @@
 #include <endian.h>
 #endif
 
-// Thread-local context for token computation
-static __thread EVP_MAC *t_mac = NULL;
+/* Thread-local contexts for token generation cache */
+static _Thread_local EVP_MAC *t_mac = NULL;
+static _Thread_local EVP_MD_CTX *t_md_ctx = NULL;
+static _Thread_local EVP_MD *t_sha256_md = NULL;
+static _Thread_local EVP_MAC_CTX *t_mac_ctx = NULL;
 
 static epoch_key_entry_t global_entry;
 
@@ -108,32 +111,38 @@ void crypto_compute_token(const uint8_t *epoch_key, uint64_t timestamp, uint64_t
     if (!t_mac) {
         t_mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
     }
+    if (!t_md_ctx) {
+        t_md_ctx = EVP_MD_CTX_new();
+    }
+    if (!t_sha256_md) {
+        t_sha256_md = EVP_MD_fetch(NULL, "SHA2-256", NULL);
+    }
+    if (!t_mac_ctx) {
+        t_mac_ctx = EVP_MAC_CTX_new(t_mac);
+        OSSL_PARAM params[] = {
+            OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
+            OSSL_PARAM_END
+        };
+        EVP_MAC_init(t_mac_ctx, NULL, 0, params);
+    }
     
     uint8_t payload_hash[32];
     unsigned int md_len;
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(mdctx, payload, payload_len);
-    EVP_DigestFinal_ex(mdctx, payload_hash, &md_len);
-    EVP_MD_CTX_free(mdctx);
+    EVP_DigestInit_ex(t_md_ctx, t_sha256_md, NULL);
+    EVP_DigestUpdate(t_md_ctx, payload, payload_len);
+    EVP_DigestFinal_ex(t_md_ctx, payload_hash, &md_len);
 
     uint64_t ts_be = htobe64(timestamp);
     uint64_t n_be = htobe64(nonce);
 
-    EVP_MAC_CTX *t_ctx = EVP_MAC_CTX_new(t_mac);
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
-        OSSL_PARAM_END
-    };
-    EVP_MAC_init(t_ctx, epoch_key, S_IPV4_KEY_LEN, params);
-    EVP_MAC_update(t_ctx, payload_hash, 32);
-    EVP_MAC_update(t_ctx, (const unsigned char *)&ts_be, 8);
-    EVP_MAC_update(t_ctx, (const unsigned char *)&n_be, 8);
+    EVP_MAC_init(t_mac_ctx, epoch_key, S_IPV4_KEY_LEN, NULL);
+    EVP_MAC_update(t_mac_ctx, payload_hash, 32);
+    EVP_MAC_update(t_mac_ctx, (const unsigned char *)&ts_be, 8);
+    EVP_MAC_update(t_mac_ctx, (const unsigned char *)&n_be, 8);
     
     uint8_t full_mac[32];
     size_t out_len = 32;
-    EVP_MAC_final(t_ctx, full_mac, &out_len, 32);
-    EVP_MAC_CTX_free(t_ctx);
+    EVP_MAC_final(t_mac_ctx, full_mac, &out_len, 32);
 
     memcpy(token_out, full_mac, 16);
 }
@@ -166,31 +175,38 @@ void crypto_compute_token_compact(const uint8_t *epoch_key,
     if (!t_mac) {
         t_mac = EVP_MAC_fetch(NULL, "HMAC", NULL);
     }
+    if (!t_md_ctx) {
+        t_md_ctx = EVP_MD_CTX_new();
+    }
+    if (!t_sha256_md) {
+        t_sha256_md = EVP_MD_fetch(NULL, "SHA2-256", NULL);
+    }
+    if (!t_mac_ctx) {
+        t_mac_ctx = EVP_MAC_CTX_new(t_mac);
+        /* Initialize with params ONCE */
+        OSSL_PARAM params[] = {
+            OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
+            OSSL_PARAM_END
+        };
+        EVP_MAC_init(t_mac_ctx, NULL, 0, params);
+    }
 
     /* Hash payload first (same pattern as full mode) */
     uint8_t payload_hash[32];
     unsigned int md_len;
-    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(mdctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(mdctx, payload, payload_len);
-    EVP_DigestFinal_ex(mdctx, payload_hash, &md_len);
-    EVP_MD_CTX_free(mdctx);
+    EVP_DigestInit_ex(t_md_ctx, t_sha256_md, NULL);
+    EVP_DigestUpdate(t_md_ctx, payload, payload_len);
+    EVP_DigestFinal_ex(t_md_ctx, payload_hash, &md_len);
 
     uint32_t n_be = htobe32(nonce);
 
-    EVP_MAC_CTX *t_ctx = EVP_MAC_CTX_new(t_mac);
-    OSSL_PARAM params[] = {
-        OSSL_PARAM_construct_utf8_string("digest", "SHA256", 0),
-        OSSL_PARAM_END
-    };
-    EVP_MAC_init(t_ctx, epoch_key, S_IPV4_KEY_LEN, params);
-    EVP_MAC_update(t_ctx, payload_hash, 32);
-    EVP_MAC_update(t_ctx, (const unsigned char *)&n_be, 4);
+    EVP_MAC_init(t_mac_ctx, epoch_key, S_IPV4_KEY_LEN, NULL);
+    EVP_MAC_update(t_mac_ctx, payload_hash, 32);
+    EVP_MAC_update(t_mac_ctx, (const unsigned char *)&n_be, 4);
 
     uint8_t full_mac[32];
     size_t out_len = 32;
-    EVP_MAC_final(t_ctx, full_mac, &out_len, 32);
-    EVP_MAC_CTX_free(t_ctx);
+    EVP_MAC_final(t_mac_ctx, full_mac, &out_len, 32);
 
     /* Truncate to 12 bytes (HMAC-96 per RFC 2404) */
     memcpy(token_out_12, full_mac, 12);

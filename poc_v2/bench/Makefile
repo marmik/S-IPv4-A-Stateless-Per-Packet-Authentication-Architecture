@@ -15,7 +15,7 @@ POC_SRC  := ../crypto_core.c ../replay_protection.c ../s_ipv4_shim.c
 
 .PHONY: all clean
 
-all: bench_crypto bench_verify bench_throughput bench_memory bench_adversarial
+all: bench_crypto bench_verify bench_throughput bench_memory bench_adversarial bench_profile
 	@echo "✅  Benchmark build complete.  Run ./run_all_benchmarks.sh"
 
 bench_crypto: bench_crypto.c $(POC_SRC)
@@ -33,6 +33,9 @@ bench_memory: bench_memory.c $(POC_SRC)
 bench_adversarial: bench_adversarial.c $(POC_SRC)
 	$(CC) $(CFLAGS) -o $@ $< $(POC_SRC) $(LDFLAGS)
 
+bench_profile: bench_profile.c $(POC_SRC)
+	$(CC) $(CFLAGS) -DSIPV4_PROFILE -o $@ $< $(POC_SRC) $(LDFLAGS)
+
 clean:
-	rm -f bench_crypto bench_verify bench_throughput bench_memory bench_adversarial
+	rm -f bench_crypto bench_verify bench_throughput bench_memory bench_adversarial bench_profile
 	rm -f *.csv results.txt *.pdf
