@@ -1,28 +1,56 @@
-# S-IPv4: A Stateless Per-Packet Authentication Architecture
+# S-IPv4
+## A Stateless Per-Packet Authentication Architecture
 
-This repository contains the S-IPv4 paper artifacts and a C proof-of-concept (PoC) implementation for stateless per-packet authentication.
+### Status Console
 
-## Repository layout
+- Protocol class: Stateless packet-authentication overlay for IPv4
+- Codebase: C proof-of-concept + benchmark harness + paper artifacts
+- Focus: Replay resistance, token validation, low-latency verification path
 
-- `poc/`: C implementation of the PoC, test harness, and benchmark suite.
-- `poc/bench/`: Benchmark binaries, scripts, sample data, and generated figures.
-- `s_ipv4_paper.tex`: Main LaTeX paper source.
-- `full_paper_draft.md`, `working.md`, `S-IPv4-Architecture.md`, `s-ipv4.txt`: Draft and architecture notes.
+---
 
-## Prerequisites
+## Why S-IPv4
 
-- macOS with Xcode command line tools (`cc`, `make`)
-- OpenSSL (Homebrew expected by the PoC Makefile)
+S-IPv4 explores a security model where every packet carries enough verifiable context to be authenticated without maintaining heavy per-flow state. The PoC is designed to evaluate feasibility, behavior under attack-like traffic patterns, and measurable overhead.
 
-Install OpenSSL if needed:
+---
+
+## Repository Atlas
+
+```text
+S-IPv4/
+|- poc/                    # Core PoC implementation (client/server + shared modules)
+|  |- bench/               # Benchmark suite, scripts, generated figures, raw outputs
+|  |- test_run.sh          # Automated ENFORCE/AUDIT verification sequence
+|  |- Makefile             # Build entrypoint for PoC binaries
+|- s_ipv4_paper.tex        # Primary LaTeX manuscript
+|- S-IPv4-Architecture.md  # Architecture and design notes
+|- full_paper_draft.md     # Draft narrative
+|- working.md              # Working notes
+|- s-ipv4.txt              # Additional draft material
+```
+
+---
+
+## Local Environment
+
+Target environment:
+
+- macOS
+- Xcode command line tools (`cc`, `make`)
+- OpenSSL from Homebrew (auto-detected by the Makefile)
+
+Install dependency:
 
 ```bash
 brew install openssl
 ```
 
-## Build the PoC
+---
 
-From repository root:
+## Quick Start
+
+### 1. Build PoC binaries
 
 ```bash
 cd poc
@@ -30,33 +58,64 @@ make clean
 make all
 ```
 
-This produces:
+Expected outputs:
 
 - `poc/client`
 - `poc/server`
 
-## Run automated verification
+### 2. Run the verification suite
 
 ```bash
 cd poc
 ./test_run.sh
 ```
 
-The script runs ENFORCE and AUDIT mode tests, including replay, expired timestamp, forged HMAC, spoofing, and truncated-packet scenarios.
+Test suite coverage includes:
 
-## Run benchmarks
+- Valid packet acceptance
+- Replay detection
+- Expired timestamp rejection
+- Forged HMAC rejection
+- NodeID spoof rejection
+- Truncated packet handling
+- AUDIT mode logging with payload forwarding behavior
+
+### 3. Run the full benchmark pipeline
 
 ```bash
 cd poc/bench
 ./run_all_benchmarks.sh
 ```
 
-Outputs include:
+Primary generated artifacts:
 
 - `poc/bench/results.txt`
-- PDF figures under `poc/bench/` (for example latency CDF and overhead comparison plots)
+- Benchmark PDF figures in `poc/bench/`
 
-## Notes
+---
 
-- The PoC is intended for research and evaluation purposes.
-- Existing binaries and figure artifacts are currently tracked in the repository as produced artifacts.
+## Data + Figure Pipeline
+
+The benchmark orchestrator compiles and runs four benchmark lanes:
+
+1. Token generation latency
+2. Full verification latency
+3. Throughput and overhead
+4. Bloom filter memory and false-positive behavior
+
+It then emits summary metrics and publication-ready figures.
+
+---
+
+## Operating Modes
+
+- `ENFORCE`: invalid packets are rejected
+- `AUDIT`: invalid packets are logged while payload delivery behavior can be observed
+
+This split allows security validation and compatibility experimentation without changing core binaries.
+
+---
+
+## Research Note
+
+This repository is a research-grade proof-of-concept. It is intended for experimentation, evaluation, and paper reproducibility work rather than direct production deployment.
