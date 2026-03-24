@@ -1,0 +1,51 @@
+#ifndef S_IPV4_H
+#define S_IPV4_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+/* ── Version identifiers ─────────────────────────────────────────── */
+#define S_IPV4_VERSION_STR        "2.0"
+#define S_IPV4_FLAG_V1            0x94   /* V1 legacy magic byte */
+#define S_IPV4_FLAG_V2            0x95   /* V2 full header mode  */
+#define S_IPV4_MAGIC_MASK         0xF0   /* upper nibble = 0x90  */
+#define S_IPV4_MAGIC_VALUE        0x90
+#define S_IPV4_NODE_ID_LEN        8
+
+/* ── Header sizes ────────────────────────────────────────────────── */
+#define S_IPV4_V1_HEADER_SIZE     41
+#define S_IPV4_V2_HEADER_SIZE     43
+#define S_IPV4_MAX_PAYLOAD        1431   /* 1500-20(IP)-8(UDP)-43(S-IPv4) */
+
+/* ── Epoch Key constants ─────────────────────────────────────────── */
+#define S_IPV4_KEY_LEN            32     /* 256-bit HMAC-SHA256 key      */
+#define S_IPV4_EPOCH_DURATION_SEC 86400  /* 24-hour default epoch        */
+#define S_IPV4_OVERLAP_SEC        60     /* key rotation grace window    */
+
+/* ── V2 packed header struct (43 bytes) ─────────────────────────── */
+typedef struct __attribute__((packed)) {
+    uint8_t  s_flag;                     /*  1 byte  — versioned magic   */
+    uint8_t  node_id[S_IPV4_NODE_ID_LEN];/*  8 bytes — derived identity  */
+    uint64_t timestamp;                  /*  8 bytes — big-endian epoch  */
+    uint64_t nonce;                      /*  8 bytes — atomic counter    */
+    uint16_t key_ver;                    /*  2 bytes — epoch key version */
+    uint8_t  hmac[16];                   /* 16 bytes — truncated HMAC    */
+} s_ipv4_v2_header_t;                   /* Total: 43 bytes              */
+
+/* ── Result codes (V1 + V2 extended) ────────────────────────────── */
+typedef enum {
+    SHIM_ACCEPT            = 0,
+    SHIM_DROP_TRUNCATED    = 1,
+    SHIM_DROP_UNKNOWN_NODE = 2,
+    SHIM_DROP_INVALID_TOKEN= 3,
+    SHIM_DROP_EXPIRED      = 4,
+    SHIM_DROP_REPLAY       = 5,
+    SHIM_DROP_BAD_VERSION  = 6,
+    SHIM_DROP_RATE_LIMITED = 7,
+    SHIM_DEGRADED_MODE     = 8,
+    SHIM_ACCEPT_AUDIT      = 9
+} shim_result_t;
+
+const char *shim_result_str(shim_result_t r);
+
+#endif /* S_IPV4_H */
